@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Fishing Game</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+<style>
+body { margin: 0; overflow: hidden; font-family: Arial; }
+#ui {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  color: white;
+  z-index: 10;
+  background: rgba(0,0,0,0.6);
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 14px;
+}
+#tension {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  color: white;
+  z-index: 10;
+  background: rgba(0,0,0,0.6);
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+#castMeter {
+  position: absolute;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 320px;
+  height: 26px;
+  background: #222;
+  border: 3px solid #ffd700;
+  border-radius: 13px;
+  overflow: hidden;
+  display: none;
+}
+#castBar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(to right, #4ade80, #22c55e);
+}
+#catch, #shop, #inventory {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0,0,0,0.92);
+  color: white;
+  padding: 20px 30px;
+  border-radius: 12px;
+  text-align: center;
+  display: none;
+  z-index: 100;
+  border: 3px solid #ffd700;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+button {
+  background: #4ade80;
+  color: black;
+  border: none;
+  padding: 8px 16px;
+  margin: 6px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+select {
+  background: #111;
+  color: white;
+  border: 1px solid #ffd700;
+  padding: 4px 6px;
+  border-radius: 5px;
+  margin-top: 4px;
+}
+</style>
+</head>
+<body>
+<div id="ui">
+<strong>Fishing Game</strong><br>
+WASD = move<br>
+Hold Left Click = build power & cast<br>
+Release = cast | Hold Left Click again = reel back<br>
+1-6 = Change bait<br>
+I = Inventory | B = Shop | U = Unlock Cursor<br>
+Bait:
+<select id="bait-select"></select><br>
+Starter bait: 20 Old Worms = small cheap fish only.
+</div>
+<div id="tension">Tension: 0</div>
+<div id="castMeter">
+  <div id="castBar"></div>
+</div>
+<div id="catch">
+  <h2>🎣 Fish Caught!</h2>
+  <p id="catch-info"></p>
+  <button onclick="closeCatch()">Continue Fishing</button>
+</div>
+<div id="inventory">
+  <h2>🎒 Inventory (<span id="money">0</span>$)</h2>
+  <div id="inventory-list"></div>
+  <button onclick="toggleInventory()">Close</button>
+</div>
+<div id="shop">
+  <h2>🛒 Fish Market</h2>
+  <p>Money: <strong id="shop-money">0</strong>$</p>
+  <div id="shop-list"></div>
+  <button onclick="toggleShop()">Close Shop</button>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { PointerLockControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/PointerLockControls.js';
+
+/* SETUP */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87ceeb);
+const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 1000);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const controls = new PointerLockControls(camera, document.body);
+scene.add(controls.getObject());
+document.body.addEventListener('click', e => {
+  if (!e.target.closest('#ui, #catch, #shop, #inventory')) controls.lock();
+});
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+sun.position.set(5,10,5);
+scene.add(sun);
+
+/* WORLD */
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(100,100), new THREE.MeshLambertMaterial({ color: 0x3c8f3c }));
+ground.rotation.x = -Math.PI/2;
+scene.add(ground);
+const WATER_Y = 0.1;
+const POND_RADIUS = 6;
+const pond = new THREE.Mesh(new THREE.CircleGeometry(POND_RADIUS, 32), new THREE.MeshLambertMaterial({ color: 0x2a7fff }));
+pond.rotation.x = -Math.PI/2;
+pond.position.y = WATER_Y;
+scene.add(pond);
+// Shop building
+const shopBuilding = new THREE.Mesh(new THREE.BoxGeometry(4, 3, 4), new THREE.MeshStandardMaterial({ color: 0x8b5a2b }));
+shopBuilding.position.set(12, 1.5, -8);
+scene.add(shopBuilding);
+const roof = new THREE.Mesh(new THREE.ConeGeometry(3, 1.5, 4), new THREE.MeshStandardMaterial({ color: 0x9c2a2a }));
+roof.position.set(12, 3.8, -8);
+scene.add(roof);
+
+/* ROD */
+const rod = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.02, 0.03, 2.8, 8),
+  new THREE.MeshStandardMaterial({ color: 0x8b5a2b })
+);
+rod.position.set(0.42, -0.48, -1.0);
+rod.rotation.set(-1.35, 0.12, -0.18);
+
+const rodGroup = new THREE.Group();
+rodGroup.add(rod);
+camera.add(rodGroup);
+
+/* FISHING LINE */
+let fishingLine = null;
+function createFishingLine() {
+  if (fishingLine) camera.remove(fishingLine);
+  const points = [new THREE.Vector3(0.55, -0.65, -1.05), new THREE.Vector3(0,0,0)];
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  fishingLine = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: 0xdddddd }));
+  camera.add(fishingLine);
+}
+function updateFishingLine() {
+  if (!fishingLine || !bobber) return;
+  const rodTip = new THREE.Vector3(0.55, -0.65, -1.05).applyMatrix4(camera.matrixWorld);
+  const points = [rodTip, bobber.position];
+  fishingLine.geometry.setFromPoints(points);
+  fishingLine.geometry.attributes.position.needsUpdate = true;
+}
+
+/* BAITS */
+const baits = ["Old Worm", "Bread", "Maggot", "Worm", "Corn", "Dough"];
+let selectedBait = "Old Worm";
+let activeBait = null;
+
+const baitStock = {
+  "Old Worm": 20,
+  "Bread": 0,
+  "Maggot": 0,
+  "Worm": 0,
+  "Corn": 0,
+  "Dough": 0
+};
+
+const baitShop = {
+  "Bread": { amount: 10, price: 8 },
+  "Maggot": { amount: 10, price: 12 },
+  "Worm": { amount: 10, price: 14 },
+  "Corn": { amount: 10, price: 18 },
+  "Dough": { amount: 10, price: 10 }
+};
+
+// Percentages are used as weighted catch chances.
+// Each bait column totals 100, so the selected bait controls the fish pool.
+// Old Worm is a starter bait: it only catches small, low-value fish.
+const baitCatchChances = {
+  "Old Worm": {
+    "Kuoja": 15,
+    "Paprastoji aukšlė": 35,
+    "Ešerys": 5,
+    "Pūgžlys": 25,
+    "Grūžlys": 20
+  },
+  Bread: {
+    "Kuoja": 20,
+    "Raudė": 13,
+    "Karšis": 8,
+    "Plakis": 9,
+    "Paprastoji aukšlė": 18,
+    "Ešerys": 4,
+    "Pūgžlys": 2,
+    "Lynas": 2,
+    "Paprastasis karosas": 5,
+    "Sidabrinis karosas": 5,
+    "Karpis": 2,
+    "Grūžlys": 4,
+    "Šapalas": 5,
+    "Meknė": 2,
+    "Žiobris": 1
+  },
+  Maggot: {
+    "Kuoja": 18,
+    "Raudė": 8,
+    "Karšis": 8,
+    "Plakis": 9,
+    "Paprastoji aukšlė": 14,
+    "Ešerys": 12,
+    "Pūgžlys": 7,
+    "Lynas": 2,
+    "Paprastasis karosas": 4,
+    "Sidabrinis karosas": 4,
+    "Karpis": 2,
+    "Grūžlys": 6,
+    "Šapalas": 3,
+    "Meknė": 2,
+    "Žiobris": 1
+  },
+  Worm: {
+    "Kuoja": 10,
+    "Raudė": 5,
+    "Karšis": 7,
+    "Plakis": 6,
+    "Paprastoji aukšlė": 5,
+    "Ešerys": 18,
+    "Pūgžlys": 12,
+    "Lynas": 5,
+    "Paprastasis karosas": 5,
+    "Sidabrinis karosas": 5,
+    "Karpis": 3,
+    "Grūžlys": 9,
+    "Šapalas": 5,
+    "Meknė": 3,
+    "Žiobris": 2
+  },
+  Corn: {
+    "Kuoja": 8,
+    "Raudė": 6,
+    "Karšis": 10,
+    "Plakis": 9,
+    "Paprastoji aukšlė": 2,
+    "Ešerys": 1,
+    "Pūgžlys": 1,
+    "Lynas": 6,
+    "Paprastasis karosas": 9,
+    "Sidabrinis karosas": 9,
+    "Karpis": 20,
+    "Grūžlys": 2,
+    "Šapalas": 4,
+    "Meknė": 3,
+    "Žiobris": 10
+  },
+  Dough: {
+    "Kuoja": 18,
+    "Raudė": 11,
+    "Karšis": 11,
+    "Plakis": 10,
+    "Paprastoji aukšlė": 13,
+    "Ešerys": 2,
+    "Pūgžlys": 1,
+    "Lynas": 4,
+    "Paprastasis karosas": 8,
+    "Sidabrinis karosas": 8,
+    "Karpis": 6,
+    "Grūžlys": 2,
+    "Šapalas": 3,
+    "Meknė": 2,
+    "Žiobris": 1
+  }
+};
+
+/* FISH TYPES - Lithuanian float fishing species */
+const fishTypes = [
+  { lithuanian: "Kuoja", name: "Common roach", rarity: "Very common", rarityWeight: 17, color: 0xc0c0c0, scale: 0.75, weight: [0.08, 0.9], length: [12, 35], basePrice: 4 },
+  { lithuanian: "Raudė", name: "Rudd", rarity: "Common", rarityWeight: 8, color: 0xd4a017, scale: 0.8, weight: [0.08, 1.0], length: [12, 35], basePrice: 5 },
+  { lithuanian: "Karšis", name: "Common bream", rarity: "Common", rarityWeight: 7, color: 0xb08d57, scale: 1.15, weight: [0.4, 4.0], length: [25, 60], basePrice: 8 },
+  { lithuanian: "Plakis", name: "Silver/white bream", rarity: "Common", rarityWeight: 8, color: 0xd6d6d6, scale: 0.85, weight: [0.12, 1.2], length: [15, 35], basePrice: 5 },
+  { lithuanian: "Paprastoji aukšlė", name: "Common bleak", rarity: "Very common, small fish", rarityWeight: 15, color: 0xe8e8e8, scale: 0.45, weight: [0.02, 0.15], length: [8, 20], basePrice: 2 },
+  { lithuanian: "Ešerys", name: "European perch", rarity: "Very common, especially on worm", rarityWeight: 13, color: 0x2f7d32, scale: 0.9, weight: [0.08, 1.5], length: [12, 45], basePrice: 6 },
+  { lithuanian: "Pūgžlys", name: "Ruffe", rarity: "Common small bycatch", rarityWeight: 6, color: 0x7a6a45, scale: 0.5, weight: [0.02, 0.2], length: [8, 20], basePrice: 2 },
+  { lithuanian: "Lynas", name: "Tench", rarity: "Common in weedy ponds/lakes", rarityWeight: 3, color: 0x556b2f, scale: 1.0, weight: [0.25, 3.0], length: [20, 55], basePrice: 10 },
+  { lithuanian: "Paprastasis karosas", name: "Crucian carp", rarity: "Common in ponds/lakes", rarityWeight: 5, color: 0xc58f2a, scale: 0.9, weight: [0.15, 2.0], length: [15, 40], basePrice: 7 },
+  { lithuanian: "Sidabrinis karosas", name: "Prussian/Gibel carp", rarity: "Common in ponds/lakes", rarityWeight: 5, color: 0xbfb07a, scale: 0.95, weight: [0.15, 2.5], length: [15, 45], basePrice: 7 },
+  { lithuanian: "Karpis", name: "Common carp", rarity: "Common in stocked ponds", rarityWeight: 3, color: 0x9b6b2d, scale: 1.3, weight: [0.8, 6.0], length: [30, 75], basePrice: 12 },
+  { lithuanian: "Grūžlys", name: "Gudgeon", rarity: "Common in rivers/streams", rarityWeight: 4, color: 0x9a8464, scale: 0.45, weight: [0.01, 0.08], length: [6, 15], basePrice: 2 },
+  { lithuanian: "Šapalas", name: "Chub", rarity: "Common in rivers, takes bread/worms", rarityWeight: 3, color: 0xa8a878, scale: 1.0, weight: [0.25, 3.5], length: [20, 60], basePrice: 9 },
+  { lithuanian: "Meknė", name: "Ide", rarity: "River/lake float catch, less common", rarityWeight: 2, color: 0xc8b46a, scale: 0.95, weight: [0.25, 2.5], length: [20, 55], basePrice: 9 },
+  { lithuanian: "Žiobris", name: "Vimba bream", rarity: "Common regionally in rivers/Nemunas/Curonian area", rarityWeight: 1, color: 0xb8b8a0, scale: 0.95, weight: [0.25, 1.8], length: [20, 45], basePrice: 8 }
+];
+
+function getFishWeightForBait(fish, baitName = activeBait || selectedBait) {
+  const baitChance = baitCatchChances[baitName]?.[fish.lithuanian];
+  return typeof baitChance === 'number' ? Math.max(0, baitChance) : 0;
+}
+
+function chooseFishType(baitName = activeBait || selectedBait) {
+  const totalWeight = fishTypes.reduce((sum, fish) => sum + getFishWeightForBait(fish, baitName), 0);
+  if (totalWeight <= 0) return fishTypes[0];
+
+  let roll = Math.random() * totalWeight;
+  for (const fish of fishTypes) {
+    roll -= getFishWeightForBait(fish, baitName);
+    if (roll <= 0) return fish;
+  }
+  return fishTypes[0];
+}
+
+function hasSelectedBait() {
+  return (baitStock[selectedBait] || 0) > 0;
+}
+
+function updateBaitUI() {
+  if (!baitSelect) return;
+
+  if (!hasSelectedBait()) {
+    const available = baits.find(bait => (baitStock[bait] || 0) > 0);
+    if (available) selectedBait = available;
+  }
+
+  baitSelect.innerHTML = '';
+  baits.forEach(bait => {
+    const option = document.createElement('option');
+    option.value = bait;
+    option.textContent = `${bait} (${baitStock[bait] || 0})`;
+    option.disabled = (baitStock[bait] || 0) <= 0;
+    baitSelect.appendChild(option);
+  });
+
+  baitSelect.value = selectedBait;
+}
+
+/* STATE */
+let bobber = null, fishMesh = null, velocity = new THREE.Vector3();
+let state = "idle";
+let biteTimer = 0, biteActionTimer = 0, tension = 0, bobPhase = 0, castPower = 0;
+let currentFishType = null;
+let money = 0, inventory = [];
+let keys = {};
+let isCasting = false;
+
+const uiTension = document.getElementById("tension");
+const castMeter = document.getElementById("castMeter");
+const castBar = document.getElementById("castBar");
+const catchUI = document.getElementById("catch");
+const catchInfo = document.getElementById("catch-info");
+const inventoryUI = document.getElementById("inventory");
+const inventoryList = document.getElementById("inventory-list");
+const shopUI = document.getElementById("shop");
+const shopMoney = document.getElementById("shop-money");
+const shopList = document.getElementById("shop-list");
+const baitSelect = document.getElementById("bait-select");
+
+baitSelect.addEventListener('change', e => {
+  selectedBait = e.target.value;
+  updateBaitUI();
+});
+baitSelect.addEventListener('mousedown', e => e.stopPropagation());
+baitSelect.addEventListener('click', e => e.stopPropagation());
+updateBaitUI();
+
+/* UI CHECK */
+function isUIVisible() {
+  return catchUI.style.display === 'block' ||
+         inventoryUI.style.display === 'block' ||
+         shopUI.style.display === 'block';
+}
+
+/* POND AIM CHECK */
+function isValidCast() {
+  const origin = new THREE.Vector3();
+  const dir = new THREE.Vector3();
+
+  camera.getWorldPosition(origin);
+  camera.getWorldDirection(dir);
+
+  // Must look down enough for the aim line to hit the water plane
+  if (dir.y >= -0.01) return false;
+
+  // Find where the crosshair/aim ray hits the pond water height
+  const t = (WATER_Y - origin.y) / dir.y;
+  if (t < 0 || t > 35) return false;
+
+  const hitPoint = origin.clone().add(dir.multiplyScalar(t));
+
+  const dx = hitPoint.x - pond.position.x;
+  const dz = hitPoint.z - pond.position.z;
+
+  return dx * dx + dz * dz <= POND_RADIUS * POND_RADIUS;
+}
+
+/* CASTING */
+function startCast() {
+  if (state !== "idle" || isUIVisible()) return;
+  if (!hasSelectedBait()) return;
+
+  // Do not even start the cast bar or rod animation unless aiming at the pond
+  if (!isValidCast()) return;
+
+  isCasting = true;
+  castPower = 0;
+  castBar.style.width = '0%';
+  castMeter.style.display = 'block';
+}
+function releaseCast() {
+  if (!isCasting) return;
+  isCasting = false;
+  castMeter.style.display = 'none';
+  if (castPower < 15) return;
+
+  // If the player looked away from the pond while charging, cancel silently
+  if (!isValidCast()) {
+    castPower = 0;
+    rod.rotation.x = -1.35;
+    return;
+  }
+
+  if (!hasSelectedBait()) {
+    castPower = 0;
+    rod.rotation.x = -1.35;
+    updateBaitUI();
+    return;
+  }
+
+  activeBait = selectedBait;
+  baitStock[activeBait] -= 1;
+  updateBaitUI();
+
+  resetFishing(false);
+  bobber = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 12), new THREE.MeshStandardMaterial({ color: 0xff0000 }));
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  bobber.position.copy(camera.position);
+  bobber.position.y -= 0.25;
+  const power = Math.min(castPower / 100, 1.3);
+  velocity.copy(dir.multiplyScalar(0.2 * power));
+  velocity.y += 0.13 * power;
+  scene.add(bobber);
+  createFishingLine();
+  biteTimer = 5 + Math.random() * 55;
+  biteActionTimer = 0;
+  bobPhase = Math.random() * 10;
+  state = "floating";
+}
+
+/* INPUT */
+let mouseDown = false;
+addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  if (e.target.closest('#ui') || e.target.tagName === 'BUTTON' || isUIVisible()) return;
+
+  if (state === "idle") {
+    // No mouse hold / no cast bar / no rod animation unless bait exists and pond is targeted
+    if (!hasSelectedBait()) return;
+    if (!isValidCast()) return;
+    mouseDown = true;
+    startCast();
+  } else {
+    mouseDown = true;
+    if (state === "biting") hookFish();
+  }
+});
+addEventListener('mouseup', e => {
+  if (e.button === 0) {
+    mouseDown = false;
+    if (isCasting) releaseCast();
+  }
+});
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+
+  if (e.code.startsWith('Digit')) {
+    const baitIndex = Number(e.code.replace('Digit', '')) - 1;
+    if (baits[baitIndex] && (baitStock[baits[baitIndex]] || 0) > 0) {
+      selectedBait = baits[baitIndex];
+      updateBaitUI();
+    }
+  }
+
+  if (e.code === 'KeyI') toggleInventory();
+  if (e.code === 'KeyB') toggleShop();
+  if (e.code === 'KeyU') controls.unlock();
+});
+addEventListener('keyup', e => keys[e.code] = false);
+
+function hookFish() {
+  if (!bobber || state === "hooked") return;
+
+  state = "hooked";
+  currentFishType = chooseFishType(activeBait || selectedBait);
+
+  if (fishMesh) scene.remove(fishMesh);
+
+  fishMesh = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.12 * currentFishType.scale, 0.45 * currentFishType.scale, 4, 8),
+    new THREE.MeshStandardMaterial({ color: currentFishType.color })
+  );
+  fishMesh.position.copy(bobber.position);
+  fishMesh.position.y -= 0.4;
+  scene.add(fishMesh);
+}
+
+/* ANIMATE */
+let time = 0;
+function animate() {
+  requestAnimationFrame(animate);
+  time += 0.016;
+
+  const speed = 0.08;
+  if (keys['KeyW']) controls.moveForward(speed);
+  if (keys['KeyS']) controls.moveForward(-speed);
+  if (keys['KeyA']) controls.moveRight(-speed);
+  if (keys['KeyD']) controls.moveRight(speed);
+
+  if (isCasting) {
+    // Cancel instantly if the player moves the aim away from the pond while charging
+    if (!isValidCast()) {
+      isCasting = false;
+      castPower = 0;
+      castBar.style.width = '0%';
+      castMeter.style.display = 'none';
+      rod.rotation.x = -1.35;
+    } else {
+      castPower = Math.min(castPower + 1.9, 130);
+      castBar.style.width = (castPower / 130 * 100) + '%';
+      const bendAmount = Math.min(castPower / 130, 1) * 1.4;
+      rod.rotation.x = -1.35 + bendAmount;
+    }
+  } else {
+    rod.rotation.x = -1.35;
+  }
+
+  if (bobber && state === "floating") {
+    if (mouseDown) {
+      // Reel the bobber back in even when no fish is hooked
+      const dir = new THREE.Vector3().subVectors(camera.position, bobber.position);
+      const dist = dir.length();
+      dir.normalize();
+      bobber.position.add(dir.multiplyScalar(0.18));
+      velocity.set(0, 0, 0);
+      bobber.position.y = Math.max(bobber.position.y, WATER_Y + 0.05);
+
+      if (dist < 1.3) {
+        resetFishing();
+      }
+    } else {
+      velocity.y -= 0.01;
+      bobber.position.add(velocity);
+
+      if (bobber.position.y <= WATER_Y + 0.05) {
+        // Before a bite, keep the float still on the water.
+        // It only starts bobbing after the random bite timer finishes.
+        bobber.position.y = WATER_Y + 0.05;
+        velocity.set(0, 0, 0);
+      }
+
+      velocity.multiplyScalar(0.982);
+      biteTimer -= 0.016;
+      if (biteTimer <= 0) {
+        biteActionTimer = 2.0;
+        bobPhase = Math.random() * 10;
+        state = "biting";
+      }
+    }
+  }
+
+  if (state === "biting" && bobber) {
+    // Bite animation: the float bobs for a short moment, then goes under.
+    biteActionTimer -= 0.016;
+    bobber.position.y = WATER_Y + 0.03 + Math.sin(time * 22 + bobPhase) * 0.09;
+
+    if (biteActionTimer <= 0.45) {
+      bobber.position.y -= (0.45 - biteActionTimer) * 1.7;
+    }
+
+    if (biteActionTimer <= 0) {
+      hookFish();
+    }
+  }
+
+  if (state === "hooked" && bobber) {
+    if (mouseDown) {
+      tension += 0.32;
+      const dir = new THREE.Vector3().subVectors(camera.position, bobber.position);
+      const dist = dir.length();
+      dir.normalize();
+      bobber.position.add(dir.multiplyScalar(0.22));
+      if (fishMesh) {
+        fishMesh.position.lerp(bobber.position, 0.25);
+        fishMesh.position.y = bobber.position.y - 0.35;
+      }
+      if (dist < 1.3) {
+        addToInventory();
+        resetFishing();
+      }
+    } else {
+      tension = Math.max(0, tension - 0.08);
+    }
+    if (tension > 18) {
+      alert("💥 Line broke!");
+      resetFishing();
+    }
+  }
+
+  if (fishingLine) updateFishingLine();
+
+  uiTension.textContent = `Tension: ${tension.toFixed(1)}`;
+  renderer.render(scene, camera);
+}
+
+/* INVENTORY & SHOP */
+function resetFishing(clearActiveBait = true) {
+  if (bobber) scene.remove(bobber);
+  if (fishMesh) scene.remove(fishMesh);
+  if (fishingLine) camera.remove(fishingLine);
+  bobber = fishMesh = fishingLine = null;
+  tension = 0;
+  biteTimer = 0;
+  biteActionTimer = 0;
+  state = "idle";
+  if (clearActiveBait) activeBait = null;
+}
+function addToInventory() {
+  if (!currentFishType) return;
+
+  const caughtBait = activeBait || selectedBait;
+  let minWeight = currentFishType.weight[0];
+  let maxWeight = currentFishType.weight[1];
+  let minLength = currentFishType.length[0];
+  let maxLength = currentFishType.length[1];
+
+  // Old Worm starter bait only gives the small version of small fish.
+  if (caughtBait === "Old Worm") {
+    maxWeight = minWeight + (maxWeight - minWeight) * 0.22;
+    maxLength = minLength + (maxLength - minLength) * 0.25;
+  }
+
+  const weight = parseFloat((minWeight + Math.random() * (maxWeight - minWeight)).toFixed(2));
+  const length = Math.floor(minLength + Math.random() * (maxLength - minLength));
+  let value = Math.round(currentFishType.basePrice * (weight / 1.5) + (length - 30) * 0.1);
+
+  if (caughtBait === "Old Worm") value = Math.max(1, Math.min(3, value));
+  else value = Math.max(2, value);
+
+  const fishEntry = {
+    lithuanian: currentFishType.lithuanian,
+    name: currentFishType.name,
+    rarity: currentFishType.rarity,
+    bait: caughtBait,
+    chance: getFishWeightForBait(currentFishType, caughtBait),
+    weight,
+    length,
+    value
+  };
+  inventory.push(fishEntry);
+  showCatch(fishEntry);
+  updateInventoryUI();
+}
+function showCatch(fishEntry) {
+  catchInfo.innerHTML = `<strong>${fishEntry.lithuanian}</strong> (${fishEntry.name})<br>Rarity: ${fishEntry.rarity}<br>Bait: ${fishEntry.bait}<br>Bait chance: ${fishEntry.chance}%<br>Weight: ${fishEntry.weight} kg<br>Length: ${fishEntry.length} cm<br>Value: $${fishEntry.value}`;
+  catchUI.style.display = "block";
+}
+window.closeCatch = () => catchUI.style.display = "none";
+function updateInventoryUI() {
+  inventoryList.innerHTML = '';
+  inventory.forEach(f => {
+    const div = document.createElement('div');
+    div.style.margin = '6px 0';
+    div.textContent = `${f.lithuanian} (${f.name}) — ${f.rarity} — bait: ${f.bait} (${f.chance}%) — ${f.weight}kg / ${f.length}cm`;
+    inventoryList.appendChild(div);
+  });
+  document.getElementById("money").textContent = money;
+}
+function updateShopUI() {
+  shopMoney.textContent = money;
+  shopList.innerHTML = '';
+
+  const baitTitle = document.createElement('h3');
+  baitTitle.textContent = 'Buy bait';
+  shopList.appendChild(baitTitle);
+
+  Object.entries(baitShop).forEach(([bait, item]) => {
+    const div = document.createElement('div');
+    div.style.margin = '8px 0';
+    div.innerHTML = `${bait}: ${baitStock[bait] || 0} owned <button onclick="buyBait('${bait}')">Buy ${item.amount} for $${item.price}</button>`;
+    shopList.appendChild(div);
+  });
+
+  const fishTitle = document.createElement('h3');
+  fishTitle.textContent = 'Sell fish';
+  fishTitle.style.marginTop = '16px';
+  shopList.appendChild(fishTitle);
+
+  if (inventory.length === 0) {
+    const empty = document.createElement('p');
+    empty.textContent = 'You have no fish to sell.';
+    shopList.appendChild(empty);
+    return;
+  }
+
+  inventory.forEach((f, i) => {
+    const div = document.createElement('div');
+    div.style.margin = '10px 0';
+    div.innerHTML = `${f.lithuanian} (${f.name}) — ${f.rarity} — bait: ${f.bait} (${f.chance}%) — ${f.weight}kg / ${f.length}cm <button onclick="sellFish(${i})">Sell for $${f.value}</button>`;
+    shopList.appendChild(div);
+  });
+}
+window.buyBait = function(bait) {
+  const item = baitShop[bait];
+  if (!item) return;
+  if (money < item.price) {
+    alert(`Not enough money. ${bait} costs $${item.price}.`);
+    return;
+  }
+  money -= item.price;
+  baitStock[bait] = (baitStock[bait] || 0) + item.amount;
+  selectedBait = bait;
+  updateBaitUI();
+  updateShopUI();
+  updateInventoryUI();
+};
+
+window.sellFish = function(index) {
+  const f = inventory[index];
+  if (f) {
+    money += f.value;
+    inventory.splice(index, 1);
+    updateShopUI();
+    updateInventoryUI();
+    updateBaitUI();
+    alert(`Sold ${f.lithuanian} (${f.name}) for $${f.value}!`);
+  }
+};
+function toggleInventory() {
+  const visible = inventoryUI.style.display === 'block';
+  inventoryUI.style.display = visible ? 'none' : 'block';
+  if (!visible) updateInventoryUI();
+}
+function toggleShop() {
+  const dist = camera.position.distanceTo(new THREE.Vector3(12, 1.6, -8));
+  if (dist > 7) {
+    alert("Walk closer to the brown shop building!");
+    return;
+  }
+  const visible = shopUI.style.display === 'block';
+  shopUI.style.display = visible ? 'none' : 'block';
+  if (!visible) updateShopUI();
+}
+
+/* START */
+camera.position.set(0, 1.6, 8);
+animate();
+
+/* RESIZE */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
